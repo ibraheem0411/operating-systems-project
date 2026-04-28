@@ -1,17 +1,31 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99
 
-TARGET = dijkstra
+# Raylib flags (Linux)
+RAYLIB = -lraylib -lm -lpthread -ldl -lrt -lX11
 
-SRC = dijkstra.c Graph.c
+# executables
+D1 = dijkstra
+D2 = sim
 
-# build milestone 1
+# source files
+CORE = Graph.c
+M2   = GUI.c sim.c
+
+# ----------------------
+# Milestone 1
+# ----------------------
 milestone1:
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
+	$(CC) $(CFLAGS) dijkstra.c $(CORE) -o $(D1)
 
-# run convenience (optional, not required but useful)
-run:
-	./$(TARGET) input.txt
+# ----------------------
+# Milestone 2
+# ----------------------
+milestone2:
+	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
 
+# ----------------------
+# clean
+# ----------------------
 clean:
-	rm -f $(TARGET)
+	rm -f $(D1) $(D2)
