@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define INF 10000000000
+#define INF 10000000
 
 typedef struct
 {
