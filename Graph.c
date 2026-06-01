@@ -29,7 +29,10 @@ void freeGraph(Graph *g)
 
         free(g->matrix);
     }
-
+    if (g->src)
+        free(g->src);
+    if (g->dst)
+        free(g->dst);
     free(g);
 }
 
@@ -69,19 +72,25 @@ Graph *parseGraph(const char *path)
         fscanf(fp, "%d %d %d", &u, &v, &w);
         g->matrix[u][v] = w;
     }
-
-    fscanf(fp, "%d %d", &g->src, &g->dst);
+    //scan number of travelers
+    fscanf(fp, "%d", &g->travelers);
+    g->src = malloc(g->travelers * sizeof(int));
+    g->dst = malloc(g->travelers * sizeof(int));
+    //scan source and destination for each traveler
+    for (int i = 0; i < g->travelers; i++) {
+        fscanf(fp, "%d %d", &g->src[i], &g->dst[i]);
+    }
 
     fclose(fp);
 
     return g;
 }
 
-int *dijkstra(Graph *g, int *pathSize)
+int *dijkstra(Graph *g, int *pathSize, int travelerIndex)
 {
     int N = g->N;
-    int src = g->src;
-    int dst = g->dst;
+    int src = g->src[travelerIndex];
+    int dst = g->dst[travelerIndex];
 
     int dist[N];
     int visited[N];
