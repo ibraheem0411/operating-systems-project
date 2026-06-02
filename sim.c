@@ -49,9 +49,10 @@ int main(int argc, char **argv)
 
     Rectangle playStopBtn = {20.0f, 50.0f, 120.0f, 40.0f};
     int currentNodeIndex = 0;
-    float moveSpeed = 120.0f;
+    float timer = 0.0f;
+    bool waitingAtNode = false;
     Vector2 agentPos = {0};
-
+    int currentJump=0;
     if (hasPath)
     {
         agentPos = layout.pos[path[0]];
@@ -74,25 +75,39 @@ int main(int argc, char **argv)
         }
 
         // Run movement logic only while animation is active
-        if (hasPath && isAnimating && currentNodeIndex < pathSize - 1)
-        {
-            Vector2 target = layout.pos[path[currentNodeIndex + 1]];
-            Vector2 delta = {target.x - agentPos.x, target.y - agentPos.y};
-            float distance = sqrtf(delta.x * delta.x + delta.y * delta.y);
-            float step = moveSpeed * dt;
-
-            if (distance <= step)
-            {
-                agentPos = target;
-                currentNodeIndex++;
+        if (isAnimating && hasPath && currentNodeIndex < pathSize - 1){
+            timer += dt;
+            if (waitingAtNode){
+                if (timer >= 1.0f){ // Wait 1 second at each node
+                    waitingAtNode = false;
+                    timer = 0.0f;
+                }
             }
-            else
-            {
-                agentPos.x += (delta.x / distance) * step;
-                agentPos.y += (delta.y / distance) * step;
+            else {
+                int from = path[currentNodeIndex];
+                int to = path[currentNodeIndex + 1];
+                int weight = g->matrix[from][to];
+                if (timer >= 0.3f){ 
+                    currentJump++;
+                    timer = 0.0f;
+                }
+                if (currentJump >= weight){
+                    currentNodeIndex++;
+                    currentJump = 0;
+                    agentPos = layout.pos[path[currentNodeIndex]];
+                    if (currentNodeIndex < pathSize - 1){
+                        waitingAtNode = true;
+                    }
+                }
+                else {
+                    float t = (float)currentJump / weight;
+                    Vector2 fromPos = layout.pos[from];
+                    Vector2 toPos = layout.pos[to];
+                    agentPos.x = fromPos.x + t * (toPos.x - fromPos.x);
+                    agentPos.y = fromPos.y + t * (toPos.y - fromPos.y);
+                }
             }
         }
-
         if (hasPath && currentNodeIndex >= pathSize - 1)
         {
             isAnimating = false;
