@@ -24,6 +24,9 @@ milestone1:
 milestone2:
 	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
 
+
+milestone4:
+	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
 # ----------------------
 # clean
 # ----------------------
