@@ -37,7 +37,33 @@ make milestone2
 
 ---
 
-# Input Format
+# Milestone 2 - Animation (raylib)
+
+## Description
+Animates the movement between the nodes 
+
+## Compile
+make milestone2
+
+## Run
+./sim input.txt
+
+---
+
+# Milestone 4 - Animation (raylib)
+
+## Description
+creates multiple multiple sons that move in their own paths during the animation
+
+## Compile
+make milestone4
+
+## Run
+./sim input.txt
+
+---
+
+# Input Format (for milestones 1-3)
 
 First line:
 N M
@@ -46,4 +72,18 @@ Next M lines:
 u v w
 
 Last line:
+src dst
+
+# Input Format (For milestones 4-5)
+
+First line:
+N M
+
+Next M lines:
+u v w
+
+Travelers:
+k
+
+Next k lines:
 src dst
