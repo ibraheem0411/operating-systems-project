@@ -37,7 +37,7 @@ make milestone2
 
 ---
 
-# Milestone 2 - Animation (raylib)
+# Milestone 3 - Animation (raylib)
 
 ## Description
 Animates the movement between the nodes 
