@@ -72,12 +72,13 @@ Graph *parseGraph(const char *path)
         fscanf(fp, "%d %d %d", &u, &v, &w);
         g->matrix[u][v] = w;
     }
-    //scan number of travelers
+    // scan number of travelers
     fscanf(fp, "%d", &g->travelers);
     g->src = malloc(g->travelers * sizeof(int));
     g->dst = malloc(g->travelers * sizeof(int));
-    //scan source and destination for each traveler
-    for (int i = 0; i < g->travelers; i++) {
+    // scan source and destination for each traveler
+    for (int i = 0; i < g->travelers; i++)
+    {
         fscanf(fp, "%d %d", &g->src[i], &g->dst[i]);
     }
 

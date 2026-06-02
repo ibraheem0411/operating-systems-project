@@ -11,6 +11,8 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <string.h>
+#include <fcntl.h> // for O_NONBLOCK
 
 int main(int argc, char **argv)
 {
@@ -70,7 +72,7 @@ int main(int argc, char **argv)
         printf("\n");
     }
 
-    bool isAnimating = false;
+    bool isAnimating = true;
 
     Rectangle playStopBtn = {20.0f, 50.0f, 120.0f, 40.0f};
     int *currentNodeIndex = calloc(g->travelers, sizeof(int));
@@ -95,8 +97,22 @@ int main(int argc, char **argv)
         }
         pathSizes[i] = pathSize;
     }
+
+    // pipe for communication between the parent and the children
+    int pipefd[2];
+
+    if (pipe(pipefd) == -1)
+    {
+        perror("pipe failed");
+        exit(1);
+    }
+
+    // non blocking pipe
+    fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+
     // forks
     pid_t *pid = malloc(g->travelers * sizeof(pid_t));
+
     for (int i = 0; i < g->travelers; i++)
     {
         pid[i] = fork();
@@ -107,16 +123,63 @@ int main(int argc, char **argv)
         }
         if (pid[i] == 0)
         {
+            int traveler_id = i;
             printf("[%d] started\n", getpid());
-            pause();
+
+            close(pipefd[0]); // closing read end for child
+
+            // child computes its own path
+            int pathLen = 0;
+            int *myPath = dijkstra(g, &pathLen, traveler_id);
+
+            if (!myPath)
+            {
+                exit(0);
+            }
+
+            for (int j = 0; j < pathLen - 1; j++)
+            {
+                sleep(1); // placeholder for the speed time
+
+                char msg[128];
+                snprintf(msg, sizeof(msg),
+                         "[PID=%d] arrived at node %d | next node: %d\n",
+                         getpid(),
+                         myPath[j],
+                         myPath[j + 1]);
+
+                write(pipefd[1], msg, strlen(msg));
+            }
+
+            // final msg
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "[PID=%d] finished\n",
+                     getpid());
+
+            free(myPath);
+            write(pipefd[1], msg, strlen(msg));
+            close(pipefd[1]);
             exit(0);
         }
     }
+
+    close(pipefd[1]); // parent doesn't write
+
     // -------------------------
     // Main render loop
     // -------------------------
     while (!WindowShouldClose())
     {
+        char buffer[512];
+
+        int n;
+        while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0)
+        {
+            buffer[n] = '\0';
+            printf("%s", buffer);
+        }
+
         float dt = GetFrameTime();
         bool clickedButton = CheckCollisionPointRec(GetMousePosition(), playStopBtn) &&
                              IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
@@ -219,8 +282,6 @@ int main(int argc, char **argv)
 
         EndDrawing();
     }
-
-    printf("Exited render loop\n");
 
     for (int i = 0; i < g->travelers; i++)
     {
