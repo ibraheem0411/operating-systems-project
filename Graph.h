@@ -11,14 +11,16 @@ typedef struct
     int N;
     int M;
     int **matrix;
-    int src;
-    int dst;
+    int travelers;
+    int* src;
+    int* dst;
 } Graph;
+
 
 // functions
 Graph *parseGraph(const char *path);
 void freeGraph(Graph *g);
 void printGraph(Graph *g);
-int *dijkstra(Graph *g, int *pathSize);
+int *dijkstra(Graph *g, int *pathSize, int travelerIndex);
 
 #endif
