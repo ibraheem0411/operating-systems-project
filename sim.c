@@ -1,13 +1,16 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "raylib.h"
 #include "Graph.h"
 #include "GUI.h"
+
 #include <stdio.h>
 #include <stdbool.h>
 #include <math.h>
+#include <signal.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#define _POSIX_C_SOURCE 200809L
 
 int main(int argc, char **argv)
 {
@@ -41,22 +44,26 @@ int main(int argc, char **argv)
     // -------------------------
     Layout layout;
     computeLayout(&layout, g->N, (Vector2){450, 350});
-    bool* hasPath = malloc(g->travelers * sizeof(bool));
+    bool *hasPath = malloc(g->travelers * sizeof(bool));
     // -------------------------
     // Build shortest path once
     // -------------------------
     int pathSize = 0;
-    int** path = malloc(g->travelers * sizeof(int*));
-    for (int i = 0; i < g->travelers; i++) {
-        path[i] = dijkstra(g, &pathSize, i); 
-        if (path) {
+    int **path = malloc(g->travelers * sizeof(int *));
+    for (int i = 0; i < g->travelers; i++)
+    {
+        path[i] = dijkstra(g, &pathSize, i);
+        if (path)
+        {
             printf("Traveler %d: Path from %d to %d: ", i, g->src[i], g->dst[i]);
-            for (int j = 0; j < pathSize; j++) {
+            for (int j = 0; j < pathSize; j++)
+            {
                 printf("%d ", path[i][j]);
             }
             hasPath[i] = true;
         }
-        else {
+        else
+        {
             printf("Traveler %d: No path found from %d to %d", i, g->src[i], g->dst[i]);
             hasPath[i] = false;
         }
@@ -72,33 +79,39 @@ int main(int argc, char **argv)
     bool *waitingAtNode = calloc(g->travelers, sizeof(bool));
     Vector2 *agentPos = malloc(g->travelers * sizeof(Vector2));
     int *pathSizes = malloc(g->travelers * sizeof(int));
-    for (int i = 0; i < g->travelers; i++) {
+    for (int i = 0; i < g->travelers; i++)
+    {
         currentNodeIndex[i] = 0;
         currentJump[i] = 0;
         timer[i] = 0.0f;
         waitingAtNode[i] = false;
-        if (hasPath[i]) {
+        if (hasPath[i])
+        {
             agentPos[i] = layout.pos[path[i][0]];
         }
-        else {
+        else
+        {
             agentPos[i] = (Vector2){0, 0};
         }
         pathSizes[i] = pathSize;
     }
     // forks
     pid_t *pid = malloc(g->travelers * sizeof(pid_t));
-    for (int i = 0; i < g->travelers; i++) {
+    for (int i = 0; i < g->travelers; i++)
+    {
         pid[i] = fork();
-        if (pid[i] < 0) {
+        if (pid[i] < 0)
+        {
             perror("fork failed");
             exit(1);
         }
-        if (pid[i] == 0) {
+        if (pid[i] == 0)
+        {
             printf("[%d] started\n", getpid());
             pause();
             exit(0);
         }
-}
+    }
     // -------------------------
     // Main render loop
     // -------------------------
@@ -113,42 +126,51 @@ int main(int argc, char **argv)
         {
             isAnimating = !isAnimating;
         }
-        for (int i=0; i < g->travelers; i++){
-        // Run movement logic only while animation is active
-        if (isAnimating && hasPath[i] && currentNodeIndex[i] < pathSizes[i] - 1){
-            timer[i] += dt;
-            if (waitingAtNode[i]){
-                if (timer[i] >= 1.0f){ // Wait 1 second at each node
-                    waitingAtNode[i] = false;
-                    timer[i] = 0.0f;
-                }
-            }
-            else {
-                int from = path[i][currentNodeIndex[i]];
-                int to = path[i][currentNodeIndex[i] + 1];
-                int weight = g->matrix[from][to];
-                if (timer[i] >= 0.3f){ 
-                    currentJump[i]++;
-                    timer[i] = 0.0f;
-                }
-                if (currentJump[i] >= weight){
-                    currentNodeIndex[i]++;
-                    currentJump[i] = 0;
-                    agentPos[i] = layout.pos[path[i][currentNodeIndex[i]]];
-                    if (currentNodeIndex[i] < pathSizes[i] - 1){
-                        waitingAtNode[i] = true;
+        for (int i = 0; i < g->travelers; i++)
+        {
+            // Run movement logic only while animation is active
+            if (isAnimating && hasPath[i] && currentNodeIndex[i] < pathSizes[i] - 1)
+            {
+                timer[i] += dt;
+                if (waitingAtNode[i])
+                {
+                    if (timer[i] >= 1.0f)
+                    { // Wait 1 second at each node
+                        waitingAtNode[i] = false;
+                        timer[i] = 0.0f;
                     }
                 }
-                else {
-                    float t = (float)currentJump[i] / weight;
-                    Vector2 fromPos = layout.pos[from];
-                    Vector2 toPos = layout.pos[to];
-                    agentPos[i].x = fromPos.x + t * (toPos.x - fromPos.x);
-                    agentPos[i].y = fromPos.y + t * (toPos.y - fromPos.y);
+                else
+                {
+                    int from = path[i][currentNodeIndex[i]];
+                    int to = path[i][currentNodeIndex[i] + 1];
+                    int weight = g->matrix[from][to];
+                    if (timer[i] >= 0.3f)
+                    {
+                        currentJump[i]++;
+                        timer[i] = 0.0f;
+                    }
+                    if (currentJump[i] >= weight)
+                    {
+                        currentNodeIndex[i]++;
+                        currentJump[i] = 0;
+                        agentPos[i] = layout.pos[path[i][currentNodeIndex[i]]];
+                        if (currentNodeIndex[i] < pathSizes[i] - 1)
+                        {
+                            waitingAtNode[i] = true;
+                        }
+                    }
+                    else
+                    {
+                        float t = (float)currentJump[i] / weight;
+                        Vector2 fromPos = layout.pos[from];
+                        Vector2 toPos = layout.pos[to];
+                        agentPos[i].x = fromPos.x + t * (toPos.x - fromPos.x);
+                        agentPos[i].y = fromPos.y + t * (toPos.y - fromPos.y);
+                    }
                 }
             }
         }
-    }
         BeginDrawing();
         ClearBackground(RAYWHITE);
 
@@ -175,28 +197,36 @@ int main(int argc, char **argv)
         {
             // Animated entity
             Color colors[] = {RED, BLUE, GREEN, PURPLE, ORANGE, YELLOW};
-            for (int i = 0; i < g->travelers; i++) {
-            DrawCircle((int)agentPos[i].x, (int)agentPos[i].y, 10, colors[i % 6]);
-            DrawCircleLines((int)agentPos[i].x, (int)agentPos[i].y, 10, colors[i % 6]);
-        }
-        for (int i = 0; i < g->travelers; i++) {
-            if (currentNodeIndex[i] < pathSizes[i] - 1) {
-                allPathsCompleted = false;
-                break;
+            for (int i = 0; i < g->travelers; i++)
+            {
+                DrawCircle((int)agentPos[i].x, (int)agentPos[i].y, 10, colors[i % 6]);
+                DrawCircleLines((int)agentPos[i].x, (int)agentPos[i].y, 10, colors[i % 6]);
+            }
+            for (int i = 0; i < g->travelers; i++)
+            {
+                if (currentNodeIndex[i] < pathSizes[i] - 1)
+                {
+                    allPathsCompleted = false;
+                    break;
+                }
+            }
+            if (allPathsCompleted)
+            {
+                DrawText("All travelers have reached their destination!", 20, 105, 20, GREEN);
+                isAnimating = false;
             }
         }
-        if (allPathsCompleted)
-        {
-            DrawText("All travelers have reached their destination!", 20, 105, 20, GREEN);
-            isAnimating = false;
-        }
-    }
 
         EndDrawing();
     }
-    for (int i = 0; i < g->travelers; i++) {
+
+    printf("Exited render loop\n");
+
+    for (int i = 0; i < g->travelers; i++)
+    {
+        kill(pid[i], SIGTERM);
         waitpid(pid[i], NULL, 0);
-    }   
+    }
     // -------------------------
     // Cleanup
     // -------------------------
