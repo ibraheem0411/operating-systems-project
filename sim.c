@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
 
 #include "raylib.h"
 #include "Graph.h"
@@ -6,293 +7,293 @@
 
 #include <stdio.h>
 #include <stdbool.h>
-#include <math.h>
-#include <signal.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <string.h>
-#include <fcntl.h> // for O_NONBLOCK
+#include <fcntl.h>
+#include <signal.h>
+
+/* ===================================================== */
+
+typedef struct
+{
+    int traveler_id;
+    int len;
+} PathHeader;
+
+/* ===================================================== */
 
 int main(int argc, char **argv)
 {
-    // -------------------------
-    // Check input file
-    // -------------------------
     if (argc != 2)
     {
         printf("Usage: %s <input_file>\n", argv[0]);
         return 1;
     }
 
-    // -------------------------
-    // Load graph
-    // -------------------------
     Graph *g = parseGraph(argv[1]);
     if (!g)
-    {
-        printf("Failed to load graph\n");
         return 1;
-    }
 
-    // -------------------------
-    // Init window
-    // -------------------------
-    InitWindow(900, 700, "Graph Visualization - Milestone 3");
+    InitWindow(900, 700, "Milestone 5 - FIXED IPC");
     SetTargetFPS(60);
 
-    // -------------------------
-    // Compute layout once (static graph)
-    // -------------------------
     Layout layout;
     computeLayout(&layout, g->N, (Vector2){450, 350});
-    bool *hasPath = malloc(g->travelers * sizeof(bool));
-    // -------------------------
-    // Build shortest path once
-    // -------------------------
-    int pathSize = 0;
-    int **path = malloc(g->travelers * sizeof(int *));
-    for (int i = 0; i < g->travelers; i++)
-    {
-        path[i] = dijkstra(g, &pathSize, i);
-        if (path)
-        {
-            printf("Traveler %d: Path from %d to %d: ", i, g->src[i], g->dst[i]);
-            for (int j = 0; j < pathSize; j++)
-            {
-                printf("%d ", path[i][j]);
-            }
-            hasPath[i] = true;
-        }
-        else
-        {
-            printf("Traveler %d: No path found from %d to %d", i, g->src[i], g->dst[i]);
-            hasPath[i] = false;
-        }
-        printf("\n");
-    }
 
-    bool isAnimating = true;
+    /* =====================================================
+     * STATE (PARENT ONLY)
+     * ===================================================== */
+    int **path = calloc(g->travelers, sizeof(int *));
+    int *pathSize = calloc(g->travelers, sizeof(int));
 
-    Rectangle playStopBtn = {20.0f, 50.0f, 120.0f, 40.0f};
-    int *currentNodeIndex = calloc(g->travelers, sizeof(int));
-    int *currentJump = calloc(g->travelers, sizeof(int));
-    float *timer = calloc(g->travelers, sizeof(float));
-    bool *waitingAtNode = calloc(g->travelers, sizeof(bool));
-    Vector2 *agentPos = malloc(g->travelers * sizeof(Vector2));
-    int *pathSizes = malloc(g->travelers * sizeof(int));
-    for (int i = 0; i < g->travelers; i++)
-    {
-        currentNodeIndex[i] = 0;
-        currentJump[i] = 0;
-        timer[i] = 0.0f;
-        waitingAtNode[i] = false;
-        if (hasPath[i])
-        {
-            agentPos[i] = layout.pos[path[i][0]];
-        }
-        else
-        {
-            agentPos[i] = (Vector2){0, 0};
-        }
-        pathSizes[i] = pathSize;
-    }
+    int *currentNode = calloc(g->travelers, sizeof(int));
+    int *jumpCount = calloc(g->travelers, sizeof(int));
+    float *edgeTimer = calloc(g->travelers, sizeof(float));
+    bool *waiting = calloc(g->travelers, sizeof(bool));
 
-    // pipe for communication between the parent and the children
-    int pipefd[2];
+    Vector2 *pos = calloc(g->travelers, sizeof(Vector2));
 
-    if (pipe(pipefd) == -1)
-    {
-        perror("pipe failed");
-        exit(1);
-    }
+    bool isPlaying = true;
+    Rectangle playBtn = {20, 50, 140, 40};
 
-    // non blocking pipe
-    fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+    /* =====================================================
+     * PIPE (PATH + LOGS)
+     * ===================================================== */
+    int pathPipe[2];
+    int logPipe[2];
 
-    // forks
+    pipe(pathPipe);
+    pipe(logPipe);
+
+    fcntl(logPipe[0], F_SETFL, O_NONBLOCK);
+
     pid_t *pid = malloc(g->travelers * sizeof(pid_t));
 
+    /* =====================================================
+     * FORK CHILDREN
+     * ===================================================== */
     for (int i = 0; i < g->travelers; i++)
     {
         pid[i] = fork();
-        if (pid[i] < 0)
-        {
-            perror("fork failed");
-            exit(1);
-        }
+
         if (pid[i] == 0)
         {
-            int traveler_id = i;
-            printf("[%d] started\n", getpid());
+            close(pathPipe[0]);
+            close(logPipe[0]);
 
-            close(pipefd[0]); // closing read end for child
-
-            // child computes its own path
-            int pathLen = 0;
-            int *myPath = dijkstra(g, &pathLen, traveler_id);
+            int len = 0;
+            int *myPath = dijkstra(g, &len, i);
 
             if (!myPath)
-            {
                 exit(0);
-            }
 
-            for (int j = 0; j < pathLen - 1; j++)
+            /* send path */
+            PathHeader h = {i, len};
+            write(pathPipe[1], &h, sizeof(h));
+            write(pathPipe[1], myPath, len * sizeof(int));
+
+            /* =====================================================
+             * CHILD LOGGING (REQUIRED FORMAT)
+             * ===================================================== */
+            for (int j = 0; j < len - 1; j++)
             {
-                sleep(1); // placeholder for the speed time
+                int from = myPath[j];
+                int to = myPath[j + 1];
+                int weight = g->matrix[from][to];
+                usleep(weight * 300000);
 
-                char msg[128];
-                snprintf(msg, sizeof(msg),
-                         "[PID=%d] arrived at node %d | next node: %d\n",
-                         getpid(),
-                         myPath[j],
-                         myPath[j + 1]);
-
-                write(pipefd[1], msg, strlen(msg));
+                dprintf(logPipe[1],
+                        "[PID=%d] arrived at node %d | next node: %d\n",
+                        getpid(),
+                        from,
+                        to);
             }
 
-            // final msg
-            char msg[128];
-            snprintf(msg, sizeof(msg),
-                     "[PID=%d] finished\n",
-                     getpid());
+            dprintf(logPipe[1],
+                    "[PID=%d] arrived at node %d | DESTINATION\n",
+                    getpid(),
+                    myPath[len - 1]);
+
+            dprintf(logPipe[1],
+                    "[PID=%d] finished\n",
+                    getpid());
 
             free(myPath);
-            write(pipefd[1], msg, strlen(msg));
-            close(pipefd[1]);
-            exit(0);
+            close(pathPipe[1]);
+            close(logPipe[1]);
+            _exit(0);
         }
     }
 
-    close(pipefd[1]); // parent doesn't write
+    close(pathPipe[1]);
+    close(logPipe[1]);
 
-    // -------------------------
-    // Main render loop
-    // -------------------------
+    /* =====================================================
+     * RECEIVE PATHS
+     * ===================================================== */
+    int received = 0;
+
+    while (received < g->travelers)
+    {
+        PathHeader h;
+
+        if (read(pathPipe[0], &h, sizeof(h)) <= 0)
+        {
+            usleep(1000);
+            continue;
+        }
+
+        pathSize[h.traveler_id] = h.len;
+        path[h.traveler_id] = malloc(h.len * sizeof(int));
+
+        read(pathPipe[0], path[h.traveler_id], h.len * sizeof(int));
+
+        pos[h.traveler_id] = layout.pos[path[h.traveler_id][0]];
+
+        currentNode[h.traveler_id] = 0;
+        jumpCount[h.traveler_id] = 0;
+        edgeTimer[h.traveler_id] = 0;
+        waiting[h.traveler_id] = true;
+
+        received++;
+    }
+
+    /* =====================================================
+     * MAIN LOOP (ANIMATION)
+     * ===================================================== */
     while (!WindowShouldClose())
     {
+        /* ---------------- LOGS ---------------- */
         char buffer[512];
-
         int n;
-        while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0)
+
+        while ((n = read(logPipe[0], buffer, sizeof(buffer) - 1)) > 0)
         {
-            buffer[n] = '\0';
+            buffer[n] = 0;
             printf("%s", buffer);
         }
 
         float dt = GetFrameTime();
-        bool clickedButton = CheckCollisionPointRec(GetMousePosition(), playStopBtn) &&
-                             IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
 
-        // Toggle animation state (Play/Stop)
-        if ((clickedButton || IsKeyPressed(KEY_SPACE)) && hasPath)
+        /* ---------------- INPUT ---------------- */
+        bool clicked =
+            CheckCollisionPointRec(GetMousePosition(), playBtn) &&
+            IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+
+        if (clicked || IsKeyPressed(KEY_SPACE))
+            isPlaying = !isPlaying;
+
+        /* ---------------- ANIMATION ---------------- */
+        if (isPlaying)
         {
-            isAnimating = !isAnimating;
-        }
-        for (int i = 0; i < g->travelers; i++)
-        {
-            // Run movement logic only while animation is active
-            if (isAnimating && hasPath[i] && currentNodeIndex[i] < pathSizes[i] - 1)
+            for (int i = 0; i < g->travelers; i++)
             {
-                timer[i] += dt;
-                if (waitingAtNode[i])
+                if (pathSize[i] < 2)
+                    continue;
+
+                if (currentNode[i] >= pathSize[i] - 1)
+                    continue;
+
+                /* =========================
+                 * NODE WAIT (1 sec)
+                 * ========================= */
+                if (waiting[i])
                 {
-                    if (timer[i] >= 1.0f)
-                    { // Wait 1 second at each node
-                        waitingAtNode[i] = false;
-                        timer[i] = 0.0f;
+                    edgeTimer[i] += dt;
+
+                    if (edgeTimer[i] >= 1.0f)
+                    {
+                        waiting[i] = false;
+                        edgeTimer[i] = 0;
                     }
+
+                    continue;
                 }
-                else
+
+                int from = path[i][currentNode[i]];
+                int to = path[i][currentNode[i] + 1];
+
+                int weight = g->matrix[from][to];
+                if (weight <= 0)
+                    weight = 1;
+
+                /* =========================
+                 * EDGE JUMP LOGIC
+                 * ========================= */
+                edgeTimer[i] += dt;
+
+                if (edgeTimer[i] >= 0.3f)
                 {
-                    int from = path[i][currentNodeIndex[i]];
-                    int to = path[i][currentNodeIndex[i] + 1];
-                    int weight = g->matrix[from][to];
-                    if (timer[i] >= 0.3f)
+                    edgeTimer[i] = 0;
+                    jumpCount[i]++;
+
+                    float t = (float)jumpCount[i] / weight;
+
+                    Vector2 a = layout.pos[from];
+                    Vector2 b = layout.pos[to];
+
+                    pos[i].x = a.x + t * (b.x - a.x);
+                    pos[i].y = a.y + t * (b.y - a.y);
+
+                    if (jumpCount[i] >= weight)
                     {
-                        currentJump[i]++;
-                        timer[i] = 0.0f;
-                    }
-                    if (currentJump[i] >= weight)
-                    {
-                        currentNodeIndex[i]++;
-                        currentJump[i] = 0;
-                        agentPos[i] = layout.pos[path[i][currentNodeIndex[i]]];
-                        if (currentNodeIndex[i] < pathSizes[i] - 1)
-                        {
-                            waitingAtNode[i] = true;
-                        }
-                    }
-                    else
-                    {
-                        float t = (float)currentJump[i] / weight;
-                        Vector2 fromPos = layout.pos[from];
-                        Vector2 toPos = layout.pos[to];
-                        agentPos[i].x = fromPos.x + t * (toPos.x - fromPos.x);
-                        agentPos[i].y = fromPos.y + t * (toPos.y - fromPos.y);
+                        currentNode[i]++;
+                        jumpCount[i] = 0;
+                        pos[i] = layout.pos[to];
+
+                        waiting[i] = true;
+                        edgeTimer[i] = 0;
                     }
                 }
             }
         }
+
+        /* ---------------- RENDER ---------------- */
         BeginDrawing();
         ClearBackground(RAYWHITE);
 
-        // Title
-        DrawText("Graph Visualization (Milestone 3)", 10, 10, 20, DARKGRAY);
-
-        // Draw graph
         drawGraph(g, &layout);
 
-        // Draw play/stop button
-        DrawRectangleRec(playStopBtn, LIGHTGRAY);
-        DrawRectangleLines((int)playStopBtn.x, (int)playStopBtn.y, (int)playStopBtn.width, (int)playStopBtn.height, DARKGRAY);
-        DrawText(isAnimating ? "Stop" : "Play",
-                 (int)playStopBtn.x + 35,
-                 (int)playStopBtn.y + 11,
-                 20,
-                 BLACK);
-        bool allPathsCompleted = true;
-        if (!hasPath)
+        DrawRectangleRec(playBtn, LIGHTGRAY);
+        DrawRectangleLines(playBtn.x, playBtn.y, playBtn.width, playBtn.height, DARKGRAY);
+
+        DrawText(isPlaying ? "STOP" : "PLAY",
+                 playBtn.x + 35, playBtn.y + 10, 20, BLACK);
+
+        Color colors[] = {RED, BLUE, GREEN, PURPLE, ORANGE, YELLOW};
+
+        for (int i = 0; i < g->travelers; i++)
         {
-            DrawText("No path found between source and destination.", 20, 105, 20, RED);
-        }
-        else
-        {
-            // Animated entity
-            Color colors[] = {RED, BLUE, GREEN, PURPLE, ORANGE, YELLOW};
-            for (int i = 0; i < g->travelers; i++)
-            {
-                DrawCircle((int)agentPos[i].x, (int)agentPos[i].y, 10, colors[i % 6]);
-                DrawCircleLines((int)agentPos[i].x, (int)agentPos[i].y, 10, colors[i % 6]);
-            }
-            for (int i = 0; i < g->travelers; i++)
-            {
-                if (currentNodeIndex[i] < pathSizes[i] - 1)
-                {
-                    allPathsCompleted = false;
-                    break;
-                }
-            }
-            if (allPathsCompleted)
-            {
-                DrawText("All travelers have reached their destination!", 20, 105, 20, GREEN);
-                isAnimating = false;
-            }
+            DrawCircle(pos[i].x, pos[i].y, 10, colors[i % 6]);
+            DrawCircleLines(pos[i].x, pos[i].y, 10, colors[i % 6]);
         }
 
         EndDrawing();
     }
 
+    /* =====================================================
+     * CLEANUP
+     * ===================================================== */
     for (int i = 0; i < g->travelers; i++)
     {
         kill(pid[i], SIGTERM);
         waitpid(pid[i], NULL, 0);
+        free(path[i]);
     }
-    // -------------------------
-    // Cleanup
-    // -------------------------
+
     CloseWindow();
+
     free(path);
+    free(pathSize);
+    free(currentNode);
+    free(jumpCount);
+    free(edgeTimer);
+    free(waiting);
+    free(pos);
+    free(pid);
     freeGraph(g);
 
     return 0;

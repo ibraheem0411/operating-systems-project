@@ -50,13 +50,28 @@ make milestone2
 
 ---
 
-# Milestone 4 - Animation (raylib)
+# Milestone 4 - Parent and Children (raylib)
 
 ## Description
-creates multiple multiple sons that move in their own paths during the animation
+creates multiple multiple children that move in their own paths during the animation
 
 ## Compile
 make milestone4
+
+## Run
+./sim input.txt
+
+---
+
+# Milestone 5 - IPC (raylib)
+
+## Description
+- makes the children compute their paths independently 
+- communication between child and parent using PIPE
+- logs the status of the children with messages
+
+## Compile
+make milestone5
 
 ## Run
 ./sim input.txt
