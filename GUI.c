@@ -7,11 +7,11 @@
 #endif
 
 // -------------------------
-// Layout (circle placement)
+// Layout
 // -------------------------
 void computeLayout(Layout *layout, int N, Vector2 center)
 {
-    float radius = 220.0f;
+    float radius = 230.0f;
     float angleStep = 2 * PI / N;
 
     for (int i = 0; i < N; i++)
@@ -24,13 +24,14 @@ void computeLayout(Layout *layout, int N, Vector2 center)
 }
 
 // -------------------------
-// Draw arrow helper
+// Arrow (clean + centered)
 // -------------------------
 static void drawArrow(Vector2 a, Vector2 b)
 {
-    DrawLineV(a, b, BLACK);
+    Vector2 dir = {
+        b.x - a.x,
+        b.y - a.y};
 
-    Vector2 dir = {b.x - a.x, b.y - a.y};
     float len = sqrtf(dir.x * dir.x + dir.y * dir.y);
     if (len == 0)
         return;
@@ -38,26 +39,38 @@ static void drawArrow(Vector2 a, Vector2 b)
     dir.x /= len;
     dir.y /= len;
 
+    float r = 30.0f;
+
+    Vector2 start = {a.x + dir.x * r, a.y + dir.y * r};
+    Vector2 end = {b.x - dir.x * r, b.y - dir.y * r};
+
+    // soft shadow (gives depth)
+    DrawLineEx(start, end, 8.0f, Fade(BLACK, 0.25f));
+
+    // main edge
+    DrawLineEx(start, end, 4.0f, DARKGRAY);
+
+    // arrow head
     Vector2 left = {
-        b.x - dir.x * 15 - dir.y * 7,
-        b.y - dir.y * 15 + dir.x * 7};
+        end.x - dir.x * 14 - dir.y * 7,
+        end.y - dir.y * 14 + dir.x * 7};
 
     Vector2 right = {
-        b.x - dir.x * 15 + dir.y * 7,
-        b.y - dir.y * 15 - dir.x * 7};
+        end.x - dir.x * 14 + dir.y * 7,
+        end.y - dir.y * 14 - dir.x * 7};
 
-    DrawLineV(b, left, BLACK);
-    DrawLineV(b, right, BLACK);
+    DrawLineEx(end, left, 3.0f, DARKGRAY);
+    DrawLineEx(end, right, 3.0f, DARKGRAY);
 }
 
 // -------------------------
-// Draw full graph
+// Graph drawing
 // -------------------------
 void drawGraph(Graph *g, Layout *layout)
 {
     int N = g->N;
 
-    // -------- edges first --------
+    // ========= EDGES =========
     for (int u = 0; u < N; u++)
     {
         for (int v = 0; v < N; v++)
@@ -69,32 +82,46 @@ void drawGraph(Graph *g, Layout *layout)
 
                 drawArrow(a, b);
 
-                // weight label in middle
+                // weight label background
                 Vector2 mid = {
-                    (a.x + b.x) / 2.0f,
-                    (a.y + b.y) / 2.0f};
+                    (a.x + b.x) * 0.5f,
+                    (a.y + b.y) * 0.5f};
 
-                DrawText(TextFormat("%d", g->matrix[u][v]),
-                         (int)mid.x,
-                         (int)mid.y,
-                         15,
-                         RED);
+                DrawCircle(mid.x, mid.y, 13, Fade(BLACK, 0.9f));
+
+                DrawText(
+                    TextFormat("%d", g->matrix[u][v]),
+                    mid.x - 6,
+                    mid.y - 10,
+                    18,
+                    MAROON);
             }
         }
     }
 
-    // -------- nodes on top --------
+    // ========= NODES =========
     for (int i = 0; i < N; i++)
     {
         Vector2 p = layout->pos[i];
 
-        DrawCircle((int)p.x, (int)p.y, 20, SKYBLUE);
-        DrawCircleLines((int)p.x, (int)p.y, 20, DARKBLUE);
+        // glow effect (outer soft ring)
+        DrawCircle(p.x, p.y, 36, Fade(SKYBLUE, 0.15f));
 
-        DrawText(TextFormat("%d", i),
-                 (int)p.x - 5,
-                 (int)p.y - 10,
-                 20,
-                 BLACK);
+        // border
+        DrawCircle(p.x, p.y, 30, DARKBLUE);
+
+        // inner fill
+        DrawCircle(p.x, p.y, 26, SKYBLUE);
+
+        // highlight core
+        DrawCircle(p.x, p.y, 18, Fade(WHITE, 0.25f));
+
+        // node id
+        DrawText(
+            TextFormat("%d", i),
+            p.x - 6,
+            p.y - 10,
+            20,
+            BLACK);
     }
 }
