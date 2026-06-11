@@ -78,6 +78,21 @@ make milestone5
 
 ---
 
+# Milestone 6 - Semaphores 
+
+## Description
+- Makes each node a critical zone
+- The children wait for their turn
+- the children are coloured in accordance with their status
+
+## Compile
+make milestone6
+
+## Run
+./sim input.txt
+
+---
+
 # Input Format (for milestones 1-3)
 
 First line:
@@ -89,7 +104,7 @@ u v w
 Last line:
 src dst
 
-# Input Format (For milestones 4-5)
+# Input Format (For milestones 4-6)
 
 First line:
 N M
