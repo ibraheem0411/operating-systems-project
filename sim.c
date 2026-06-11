@@ -14,6 +14,9 @@
 #include <string.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <semaphore.h>
 
 /* ===================================================== */
 
@@ -22,6 +25,25 @@ typedef struct
     int traveler_id;
     int len;
 } PathHeader;
+
+/* ===================================================== */
+
+typedef enum
+{
+    MOVING,
+    WAITING_FOR_NODE,
+    INSIDE_NODE,
+    FINISHED
+} TravelerState;
+
+/* ===================================================== */
+
+typedef struct
+{
+    TravelerState state;
+    int currentNode;
+    int nextNode;
+} TravelerInfo;
 
 /* ===================================================== */
 
@@ -73,6 +95,75 @@ int main(int argc, char **argv)
     pid_t *pid = malloc(g->travelers * sizeof(pid_t));
 
     /* =====================================================
+     * SHARED MEMORY
+     * ===================================================== */
+
+    int shm_fd = shm_open(
+        "/traveler_state",
+        O_CREAT | O_RDWR,
+        0666);
+
+    if (shm_fd == -1)
+    {
+        perror("shm_open");
+        exit(1);
+    }
+
+    size_t shmSize =
+        g->travelers * sizeof(TravelerInfo);
+
+    ftruncate(shm_fd, shmSize);
+
+    TravelerInfo *shared =
+        mmap(NULL,
+             shmSize,
+             PROT_READ | PROT_WRITE,
+             MAP_SHARED,
+             shm_fd,
+             0);
+
+    if (shared == MAP_FAILED)
+    {
+        perror("mmap");
+        exit(1);
+    }
+
+    for (int i = 0; i < g->travelers; i++)
+    {
+        shared[i].state = MOVING;
+        shared[i].currentNode = -1;
+        shared[i].nextNode = -1;
+    }
+
+    /* =====================================================
+     * SEMAPHORES
+     * ===================================================== */
+
+    sem_t **nodeSem =
+        malloc(g->N * sizeof(sem_t *));
+
+    for (int i = 0; i < g->N; i++)
+    {
+        char name[64];
+
+        sprintf(name, "/node_%d", i);
+
+        sem_unlink(name);
+
+        nodeSem[i] =
+            sem_open(name,
+                     O_CREAT,
+                     0666,
+                     1);
+
+        if (nodeSem[i] == SEM_FAILED)
+        {
+            perror("sem_open");
+            exit(1);
+        }
+    }
+
+    /* =====================================================
      * FORK CHILDREN
      * ===================================================== */
     for (int i = 0; i < g->travelers; i++)
@@ -90,32 +181,66 @@ int main(int argc, char **argv)
             if (!myPath)
                 exit(0);
 
+            int first = myPath[0];
+
+            shared[i].state = WAITING_FOR_NODE;
+            shared[i].nextNode = first;
+
+            sem_wait(nodeSem[first]);
+
+            shared[i].state = INSIDE_NODE;
+            shared[i].currentNode = first;
+
+            sleep(1);
+
             /* send path */
             PathHeader h = {i, len};
             write(pathPipe[1], &h, sizeof(h));
             write(pathPipe[1], myPath, len * sizeof(int));
 
             /* =====================================================
-             * CHILD LOGGING (REQUIRED FORMAT)
+             * CHILD LOGGING
              * ===================================================== */
             for (int j = 0; j < len - 1; j++)
             {
                 int from = myPath[j];
                 int to = myPath[j + 1];
+
                 int weight = g->matrix[from][to];
-                usleep(weight * 300000);
 
                 dprintf(logPipe[1],
                         "[PID=%d] arrived at node %d | next node: %d\n",
                         getpid(),
                         from,
                         to);
+
+                sem_post(nodeSem[from]);
+
+                shared[i].state = MOVING;
+
+                usleep(weight * 300000);
+
+                shared[i].state = WAITING_FOR_NODE;
+                shared[i].nextNode = to;
+
+                sem_wait(nodeSem[to]);
+
+                shared[i].state = INSIDE_NODE;
+                shared[i].currentNode = to;
+
+                sleep(1);
             }
+
+            int destination = myPath[len - 1];
 
             dprintf(logPipe[1],
                     "[PID=%d] arrived at node %d | DESTINATION\n",
                     getpid(),
-                    myPath[len - 1]);
+                    destination);
+
+            shared[i].state = FINISHED;
+
+            sem_post(nodeSem[destination]);
 
             dprintf(logPipe[1],
                     "[PID=%d] finished\n",
@@ -253,7 +378,7 @@ int main(int argc, char **argv)
 
         /* ---------------- RENDER ---------------- */
         BeginDrawing();
-        ClearBackground(RAYWHITE);
+        ClearBackground(BLACK);
 
         drawGraph(g, &layout);
 
@@ -263,12 +388,34 @@ int main(int argc, char **argv)
         DrawText(isPlaying ? "STOP" : "PLAY",
                  playBtn.x + 35, playBtn.y + 10, 20, BLACK);
 
-        Color colors[] = {RED, BLUE, GREEN, PURPLE, ORANGE, YELLOW};
-
         for (int i = 0; i < g->travelers; i++)
         {
-            DrawCircle(pos[i].x, pos[i].y, 10, colors[i % 6]);
-            DrawCircleLines(pos[i].x, pos[i].y, 10, colors[i % 6]);
+            Color c;
+
+            switch (shared[i].state)
+            {
+            case WAITING_FOR_NODE:
+                c = YELLOW;
+                break;
+
+            case INSIDE_NODE:
+                c = GREEN;
+                break;
+
+            case MOVING:
+                c = BLUE;
+                break;
+
+            case FINISHED:
+                c = GRAY;
+                break;
+
+            default:
+                c = RED;
+            }
+
+            DrawCircle(pos[i].x, pos[i].y, 10, c);
+            DrawCircleLines(pos[i].x, pos[i].y, 10, BLACK);
         }
 
         EndDrawing();
@@ -282,6 +429,20 @@ int main(int argc, char **argv)
         kill(pid[i], SIGTERM);
         waitpid(pid[i], NULL, 0);
         free(path[i]);
+    }
+
+    munmap(shared, shmSize);
+    close(shm_fd);
+    shm_unlink("/traveler_state");
+
+    for (int i = 0; i < g->N; i++)
+    {
+        char name[64];
+
+        sprintf(name, "/node_%d", i);
+
+        sem_close(nodeSem[i]);
+        sem_unlink(name);
     }
 
     CloseWindow();
