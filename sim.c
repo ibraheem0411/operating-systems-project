@@ -14,36 +14,60 @@
 #include <string.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <semaphore.h>
+#include <sys/mman.h>
+#include <math.h>
+#include <errno.h>
+#include <time.h>
 
-/* ===================================================== */
+/* =====================================================
+ * IPC CONTRACT (MILESTONE 6)
+ * ===================================================== */
+#define MAX_PATH_LEN 50
 
-typedef struct
-{
+typedef struct {
     int traveler_id;
     int len;
-} PathHeader;
+    int path_nodes[MAX_PATH_LEN];
+} PathMsg;
 
-/* ===================================================== */
+typedef enum {
+    MSG_MOVING,    
+    MSG_WAITING,   
+    MSG_INSIDE,    
+    MSG_LEFT,      
+    MSG_DONE       
+} MsgType;
 
-typedef enum
-{
-    MOVING,
-    WAITING_FOR_NODE,
-    INSIDE_NODE,
-    FINISHED
-} TravelerState;
+typedef struct {
+    pid_t pid;
+    int traveler_id;
+    int from_node;
+    int to_node;
+    MsgType type;
+} StateMsg;
 
-/* ===================================================== */
+/* =====================================================
+ * OS-SAFE WRAPPERS (EINTR PROTECTION)
+ * ===================================================== */
 
-typedef struct
-{
-    TravelerState state;
-    int currentNode;
-    int nextNode;
-} TravelerInfo;
+// Prevents sem_wait from breaking if interrupted by SIGSTOP/SIGCONT
+void safe_sem_wait(sem_t *sem) {
+    while (sem_wait(sem) == -1) {
+        if (errno == EINTR) continue; // Woken by signal, resume waiting
+        else break;
+    }
+}
+
+// Prevents sleep from exiting early if interrupted by OS signals
+void safe_sleep(float seconds) {
+    struct timespec req, rem;
+    req.tv_sec = (time_t)seconds;
+    req.tv_nsec = (seconds - (time_t)seconds) * 1000000000L;
+    while (nanosleep(&req, &rem) == -1 && errno == EINTR) {
+        req = rem; // Resume sleeping for the exact remaining time
+    }
+}
 
 /* ===================================================== */
 
@@ -56,17 +80,29 @@ int main(int argc, char **argv)
     }
 
     Graph *g = parseGraph(argv[1]);
-    if (!g)
-        return 1;
+    if (!g) return 1;
 
-    InitWindow(900, 700, "Milestone 5 - FIXED IPC");
+    InitWindow(900, 700, "Milestone 6 - Bulletproof Synchronization");
     SetTargetFPS(60);
 
     Layout layout;
     computeLayout(&layout, g->N, (Vector2){450, 350});
 
     /* =====================================================
-     * STATE (PARENT ONLY)
+     * SEMAPHORES (SHARED MEMORY)
+     * ===================================================== */
+    sem_t *node_sem = mmap(NULL, g->N * sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (node_sem == MAP_FAILED) {
+        perror("mmap failed");
+        return 1;
+    }
+
+    for (int i = 0; i < g->N; i++) {
+        sem_init(&node_sem[i], 1, 1);
+    }
+
+    /* =====================================================
+     * STATE
      * ===================================================== */
     int **path = calloc(g->travelers, sizeof(int *));
     int *pathSize = calloc(g->travelers, sizeof(int));
@@ -74,15 +110,15 @@ int main(int argc, char **argv)
     int *currentNode = calloc(g->travelers, sizeof(int));
     int *jumpCount = calloc(g->travelers, sizeof(int));
     float *edgeTimer = calloc(g->travelers, sizeof(float));
-    bool *waiting = calloc(g->travelers, sizeof(bool));
-
+    
+    MsgType *traveler_state = calloc(g->travelers, sizeof(MsgType));
     Vector2 *pos = calloc(g->travelers, sizeof(Vector2));
 
     bool isPlaying = true;
     Rectangle playBtn = {20, 50, 140, 40};
 
     /* =====================================================
-     * PIPE (PATH + LOGS)
+     * PIPES
      * ===================================================== */
     int pathPipe[2];
     int logPipe[2];
@@ -93,75 +129,6 @@ int main(int argc, char **argv)
     fcntl(logPipe[0], F_SETFL, O_NONBLOCK);
 
     pid_t *pid = malloc(g->travelers * sizeof(pid_t));
-
-    /* =====================================================
-     * SHARED MEMORY
-     * ===================================================== */
-
-    int shm_fd = shm_open(
-        "/traveler_state",
-        O_CREAT | O_RDWR,
-        0666);
-
-    if (shm_fd == -1)
-    {
-        perror("shm_open");
-        exit(1);
-    }
-
-    size_t shmSize =
-        g->travelers * sizeof(TravelerInfo);
-
-    ftruncate(shm_fd, shmSize);
-
-    TravelerInfo *shared =
-        mmap(NULL,
-             shmSize,
-             PROT_READ | PROT_WRITE,
-             MAP_SHARED,
-             shm_fd,
-             0);
-
-    if (shared == MAP_FAILED)
-    {
-        perror("mmap");
-        exit(1);
-    }
-
-    for (int i = 0; i < g->travelers; i++)
-    {
-        shared[i].state = MOVING;
-        shared[i].currentNode = -1;
-        shared[i].nextNode = -1;
-    }
-
-    /* =====================================================
-     * SEMAPHORES
-     * ===================================================== */
-
-    sem_t **nodeSem =
-        malloc(g->N * sizeof(sem_t *));
-
-    for (int i = 0; i < g->N; i++)
-    {
-        char name[64];
-
-        sprintf(name, "/node_%d", i);
-
-        sem_unlink(name);
-
-        nodeSem[i] =
-            sem_open(name,
-                     O_CREAT,
-                     0666,
-                     1);
-
-        if (nodeSem[i] == SEM_FAILED)
-        {
-            perror("sem_open");
-            exit(1);
-        }
-    }
 
     /* =====================================================
      * FORK CHILDREN
@@ -178,73 +145,59 @@ int main(int argc, char **argv)
             int len = 0;
             int *myPath = dijkstra(g, &len, i);
 
-            if (!myPath)
-                exit(0);
+            PathMsg pmsg;
+            pmsg.traveler_id = i;
+            
+            // Protection against unreachable paths (Deadlock prevention)
+            if (!myPath) {
+                pmsg.len = 0;
+                write(pathPipe[1], &pmsg, sizeof(PathMsg));
+                close(pathPipe[1]);
+                close(logPipe[1]);
+                _exit(0);
+            }
 
-            int first = myPath[0];
+            pmsg.len = len;
+            memcpy(pmsg.path_nodes, myPath, len * sizeof(int));
+            write(pathPipe[1], &pmsg, sizeof(PathMsg));
 
-            shared[i].state = WAITING_FOR_NODE;
-            shared[i].nextNode = first;
+            StateMsg msg = {getpid(), i, myPath[0], myPath[0], MSG_MOVING};
 
-            sem_wait(nodeSem[first]);
-
-            shared[i].state = INSIDE_NODE;
-            shared[i].currentNode = first;
-
-            sleep(1);
-
-            /* send path */
-            PathHeader h = {i, len};
-            write(pathPipe[1], &h, sizeof(h));
-            write(pathPipe[1], myPath, len * sizeof(int));
-
-            /* =====================================================
-             * CHILD LOGGING
-             * ===================================================== */
             for (int j = 0; j < len - 1; j++)
             {
                 int from = myPath[j];
                 int to = myPath[j + 1];
-
                 int weight = g->matrix[from][to];
 
-                dprintf(logPipe[1],
-                        "[PID=%d] arrived at node %d | next node: %d\n",
-                        getpid(),
-                        from,
-                        to);
+                msg.type = MSG_MOVING;
+                msg.from_node = from;
+                msg.to_node = to;
+                write(logPipe[1], &msg, sizeof(msg));
+                
+                // Safe sleep replaces usleep
+                safe_sleep(weight * 0.3f); 
 
-                sem_post(nodeSem[from]);
+                msg.type = MSG_WAITING;
+                write(logPipe[1], &msg, sizeof(msg));
 
-                shared[i].state = MOVING;
+                // Safe wait replaces sem_wait
+                safe_sem_wait(&node_sem[to]);
 
-                usleep(weight * 300000);
+                msg.type = MSG_INSIDE;
+                write(logPipe[1], &msg, sizeof(msg));
+                
+                // Safe sleep replaces sleep(1)
+                safe_sleep(1.0f); 
 
-                shared[i].state = WAITING_FOR_NODE;
-                shared[i].nextNode = to;
+                sem_post(&node_sem[to]);
 
-                sem_wait(nodeSem[to]);
-
-                shared[i].state = INSIDE_NODE;
-                shared[i].currentNode = to;
-
-                sleep(1);
+                msg.type = MSG_LEFT;
+                write(logPipe[1], &msg, sizeof(msg));
             }
 
-            int destination = myPath[len - 1];
-
-            dprintf(logPipe[1],
-                    "[PID=%d] arrived at node %d | DESTINATION\n",
-                    getpid(),
-                    destination);
-
-            shared[i].state = FINISHED;
-
-            sem_post(nodeSem[destination]);
-
-            dprintf(logPipe[1],
-                    "[PID=%d] finished\n",
-                    getpid());
+            msg.type = MSG_DONE;
+            msg.to_node = myPath[len - 1];
+            write(logPipe[1], &msg, sizeof(msg));
 
             free(myPath);
             close(pathPipe[1]);
@@ -260,162 +213,170 @@ int main(int argc, char **argv)
      * RECEIVE PATHS
      * ===================================================== */
     int received = 0;
-
     while (received < g->travelers)
     {
-        PathHeader h;
+        PathMsg pmsg;
+        if (read(pathPipe[0], &pmsg, sizeof(PathMsg)) == sizeof(PathMsg))
+        {
+            int t_id = pmsg.traveler_id;
+            
+            if (pmsg.len == 0) {
+                pathSize[t_id] = 0;
+                received++;
+                continue;
+            }
 
-        if (read(pathPipe[0], &h, sizeof(h)) <= 0)
+            pathSize[t_id] = pmsg.len;
+            path[t_id] = malloc(pmsg.len * sizeof(int));
+            memcpy(path[t_id], pmsg.path_nodes, pmsg.len * sizeof(int));
+
+            pos[t_id] = layout.pos[path[t_id][0]];
+            currentNode[t_id] = 0;
+            jumpCount[t_id] = 0;
+            edgeTimer[t_id] = 0;
+            traveler_state[t_id] = MSG_MOVING;
+
+            received++;
+        }
+        else
         {
             usleep(1000);
-            continue;
         }
-
-        pathSize[h.traveler_id] = h.len;
-        path[h.traveler_id] = malloc(h.len * sizeof(int));
-
-        read(pathPipe[0], path[h.traveler_id], h.len * sizeof(int));
-
-        pos[h.traveler_id] = layout.pos[path[h.traveler_id][0]];
-
-        currentNode[h.traveler_id] = 0;
-        jumpCount[h.traveler_id] = 0;
-        edgeTimer[h.traveler_id] = 0;
-        waiting[h.traveler_id] = true;
-
-        received++;
     }
 
     /* =====================================================
-     * MAIN LOOP (ANIMATION)
+     * MAIN LOOP
      * ===================================================== */
     while (!WindowShouldClose())
     {
-        /* ---------------- LOGS ---------------- */
-        char buffer[512];
-        int n;
-
-        while ((n = read(logPipe[0], buffer, sizeof(buffer) - 1)) > 0)
+        /* ---------------- LOGS & STATE UPDATES ---------------- */
+        StateMsg msg;
+        while (read(logPipe[0], &msg, sizeof(msg)) == sizeof(msg))
         {
-            buffer[n] = 0;
-            printf("%s", buffer);
+            traveler_state[msg.traveler_id] = msg.type;
+
+            if (msg.type == MSG_INSIDE)
+            {
+                if (msg.to_node == g->dst[msg.traveler_id]) {
+                    printf("[PID=%d] arrived at node %d | DESTINATION\n", msg.pid, msg.to_node);
+                } else {
+                    int t_id = msg.traveler_id;
+                    int next_node = -1;
+                    for (int k = 0; k < pathSize[t_id] - 1; k++) {
+                        if (path[t_id][k] == msg.to_node) {
+                            next_node = path[t_id][k+1];
+                            break;
+                        }
+                    }
+                    printf("[PID=%d] arrived at node %d | next node: %d\n", msg.pid, msg.to_node, next_node);
+                }
+            }
+            else if (msg.type == MSG_DONE)
+            {
+                printf("[PID=%d] finished\n", msg.pid);
+            }
+            else if (msg.type == MSG_LEFT)
+            {
+                currentNode[msg.traveler_id]++;
+                jumpCount[msg.traveler_id] = 0;
+                edgeTimer[msg.traveler_id] = 0;
+            }
         }
 
         float dt = GetFrameTime();
 
-        /* ---------------- INPUT ---------------- */
-        bool clicked =
-            CheckCollisionPointRec(GetMousePosition(), playBtn) &&
-            IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+        /* ---------------- INPUT & OS PROCESS ALIGNMENT ---------------- */
+        bool clicked = CheckCollisionPointRec(GetMousePosition(), playBtn) && IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
 
         if (clicked || IsKeyPressed(KEY_SPACE))
+        {
             isPlaying = !isPlaying;
+            
+            for (int i = 0; i < g->travelers; i++) {
+                if (pathSize[i] > 0) { // Only send signals to valid travelers
+                    if (isPlaying) kill(pid[i], SIGCONT); 
+                    else kill(pid[i], SIGSTOP); 
+                }
+            }
+        }
 
-        /* ---------------- ANIMATION ---------------- */
+        /* ---------------- ANIMATION LOGIC ---------------- */
         if (isPlaying)
         {
             for (int i = 0; i < g->travelers; i++)
             {
-                if (pathSize[i] < 2)
+                if (pathSize[i] < 2 || currentNode[i] >= pathSize[i] - 1)
                     continue;
-
-                if (currentNode[i] >= pathSize[i] - 1)
-                    continue;
-
-                /* =========================
-                 * NODE WAIT (1 sec)
-                 * ========================= */
-                if (waiting[i])
-                {
-                    edgeTimer[i] += dt;
-
-                    if (edgeTimer[i] >= 1.0f)
-                    {
-                        waiting[i] = false;
-                        edgeTimer[i] = 0;
-                    }
-
-                    continue;
-                }
 
                 int from = path[i][currentNode[i]];
                 int to = path[i][currentNode[i] + 1];
-
                 int weight = g->matrix[from][to];
-                if (weight <= 0)
-                    weight = 1;
+                if (weight <= 0) weight = 1;
 
-                /* =========================
-                 * EDGE JUMP LOGIC
-                 * ========================= */
-                edgeTimer[i] += dt;
-
-                if (edgeTimer[i] >= 0.3f)
+                if (traveler_state[i] == MSG_MOVING)
                 {
-                    edgeTimer[i] = 0;
-                    jumpCount[i]++;
+                    edgeTimer[i] += dt;
+                    if (edgeTimer[i] >= 0.3f)
+                    {
+                        edgeTimer[i] = 0;
+                        if (jumpCount[i] < weight)
+                        {
+                            jumpCount[i]++;
+                        }
+                    }
 
                     float t = (float)jumpCount[i] / weight;
+                    if (t > 1.0f) t = 1.0f;
 
                     Vector2 a = layout.pos[from];
                     Vector2 b = layout.pos[to];
-
                     pos[i].x = a.x + t * (b.x - a.x);
                     pos[i].y = a.y + t * (b.y - a.y);
-
-                    if (jumpCount[i] >= weight)
-                    {
-                        currentNode[i]++;
-                        jumpCount[i] = 0;
-                        pos[i] = layout.pos[to];
-
-                        waiting[i] = true;
-                        edgeTimer[i] = 0;
-                    }
+                }
+                else if (traveler_state[i] == MSG_WAITING)
+                {
+                    Vector2 targetPos = layout.pos[to];
+                    pos[i].x = targetPos.x + 25.0f * cosf(i * 1.0f);
+                    pos[i].y = targetPos.y + 25.0f * sinf(i * 1.0f);
+                }
+                else if (traveler_state[i] == MSG_INSIDE)
+                {
+                    pos[i] = layout.pos[to];
+                }
+                else if (traveler_state[i] == MSG_DONE)
+                {
+                    pos[i] = layout.pos[g->dst[i]];
                 }
             }
         }
 
         /* ---------------- RENDER ---------------- */
         BeginDrawing();
-        ClearBackground(BLACK);
+        ClearBackground(RAYWHITE);
 
         drawGraph(g, &layout);
 
         DrawRectangleRec(playBtn, LIGHTGRAY);
         DrawRectangleLines(playBtn.x, playBtn.y, playBtn.width, playBtn.height, DARKGRAY);
+        DrawText(isPlaying ? "STOP" : "PLAY", playBtn.x + 35, playBtn.y + 10, 20, BLACK);
 
-        DrawText(isPlaying ? "STOP" : "PLAY",
-                 playBtn.x + 35, playBtn.y + 10, 20, BLACK);
+        Color colors[] = {RED, BLUE, GREEN, PURPLE, ORANGE, YELLOW};
 
         for (int i = 0; i < g->travelers; i++)
         {
-            Color c;
+            if (pathSize[i] == 0) continue; // Skip rendering if no path exists
 
-            switch (shared[i].state)
+            Color c = colors[i % 6];
+            if (traveler_state[i] == MSG_WAITING)
             {
-            case WAITING_FOR_NODE:
-                c = YELLOW;
-                break;
-
-            case INSIDE_NODE:
-                c = GREEN;
-                break;
-
-            case MOVING:
-                c = BLUE;
-                break;
-
-            case FINISHED:
-                c = GRAY;
-                break;
-
-            default:
-                c = RED;
+                DrawRectangle(pos[i].x - 8, pos[i].y - 8, 16, 16, GRAY);
+                DrawRectangleLines(pos[i].x - 8, pos[i].y - 8, 16, 16, BLACK);
             }
-
-            DrawCircle(pos[i].x, pos[i].y, 10, c);
-            DrawCircleLines(pos[i].x, pos[i].y, 10, BLACK);
+            else
+            {
+                DrawCircle(pos[i].x, pos[i].y, 10, c);
+                DrawCircleLines(pos[i].x, pos[i].y, 10, BLACK);
+            }
         }
 
         EndDrawing();
@@ -426,24 +387,16 @@ int main(int argc, char **argv)
      * ===================================================== */
     for (int i = 0; i < g->travelers; i++)
     {
+        kill(pid[i], SIGCONT); 
         kill(pid[i], SIGTERM);
         waitpid(pid[i], NULL, 0);
-        free(path[i]);
+        if (pathSize[i] > 0) free(path[i]);
     }
 
-    munmap(shared, shmSize);
-    close(shm_fd);
-    shm_unlink("/traveler_state");
-
-    for (int i = 0; i < g->N; i++)
-    {
-        char name[64];
-
-        sprintf(name, "/node_%d", i);
-
-        sem_close(nodeSem[i]);
-        sem_unlink(name);
+    for (int i = 0; i < g->N; i++) {
+        sem_destroy(&node_sem[i]);
     }
+    munmap(node_sem, g->N * sizeof(sem_t));
 
     CloseWindow();
 
@@ -452,7 +405,7 @@ int main(int argc, char **argv)
     free(currentNode);
     free(jumpCount);
     free(edgeTimer);
-    free(waiting);
+    free(traveler_state);
     free(pos);
     free(pid);
     freeGraph(g);
