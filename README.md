@@ -92,7 +92,25 @@ make milestone6
 ./sim input.txt
 
 ---
+# Milestone 7 - Scheduling Algorithms
 
+## Description
+- Replaces random node entry with centralized scheduling algorithms.
+- Implemented algorithms: FCFS (First Come First Serve) and SJF (Shortest Job First).
+- [cite_start]The parent process manages the waiting queue and wakes up the pending processes based on the chosen scheduling algorithm[cite: 279].
+
+## Compile
+make milestone7
+
+## Run
+./sim-schd fcfs <file_name>
+./sim-schd sjf <file_name>
+
+## Comparison: FCFS vs SJF
+In FCFS, travelers enter a node strictly based on their arrival time. While fair, this can cause significant delays if a traveler with a very long remaining path blocks a critical node. 
+In SJF, the "Job Length" is determined by the number of remaining nodes a traveler has until reaching their destination. Changing to SJF significantly minimized the average waiting time for travelers who are closer to their finish line. By prioritizing shortest paths, the system clears travelers from the graph faster, resulting in optimized overall movement.
+
+---
 # Input Format (for milestones 1-3)
 
 First line:
