@@ -122,7 +122,7 @@ u v w
 Last line:
 src dst
 
-# Input Format (For milestones 4-6)
+# Input Format (For milestones 4-7)
 
 First line:
 N M
