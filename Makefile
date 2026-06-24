@@ -34,7 +34,11 @@ milestone5:
 milestone6:
 	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
 
+<<<<<<< HEAD
 milestone7: 
+=======
+milestone7:
+>>>>>>> 4aab1002b5c74efb686b77936ff45e26a0a4a7c7
 	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
 # ----------------------
 # clean
