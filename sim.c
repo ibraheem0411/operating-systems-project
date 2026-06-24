@@ -63,10 +63,10 @@ int main(int argc, char **argv)
     char *inputFile = NULL;
 
     // Milestone 7 args check
-    if (argc == 3)
+    if (argc == 4&& strcmp(argv[1], "-schd") == 0)
     {
-        strcpy(schedAlgo, argv[1]);
-        inputFile = argv[2];
+        strcpy(schedAlgo, argv[2]);
+        inputFile = argv[3];
     }
     else if (argc == 2)
     {
@@ -74,7 +74,7 @@ int main(int argc, char **argv)
     }
     else
     {
-        printf("Usage for M7: %s <fcfs|sjf> <input_file>\n", argv[0]);
+        printf("Usage for M7: %s <-schd> <fcfs|sjf> <input_file>\n", argv[0]);
         printf("Usage for M2-M6: %s <input_file>\n", argv[0]);
         return 1;
     }

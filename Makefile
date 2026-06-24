@@ -7,7 +7,6 @@ RAYLIB = -lraylib -lm -lpthread -ldl -lrt -lX11
 # executables
 D1 = dijkstra
 D2 = sim
-D3 = sim-schd
 
 # source files
 CORE = Graph.c
@@ -38,7 +37,7 @@ milestone6:
 # Milestone 7 (Scheduler)
 # ----------------------
 milestone7:
-	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D3) $(RAYLIB)
+	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
 
 # ----------------------
 # clean
