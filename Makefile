@@ -19,11 +19,10 @@ milestone1:
 	$(CC) $(CFLAGS) dijkstra.c $(CORE) -o $(D1)
 
 # ----------------------
-# Milestone 2
+# Milestone 2-6
 # ----------------------
 milestone2:
 	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
-
 
 milestone4:
 	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
@@ -34,12 +33,12 @@ milestone5:
 milestone6:
 	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
 
-<<<<<<< HEAD
-milestone7: 
-=======
+# ----------------------
+# Milestone 7 (Scheduler)
+# ----------------------
 milestone7:
->>>>>>> 4aab1002b5c74efb686b77936ff45e26a0a4a7c7
 	$(CC) $(CFLAGS) $(M2) $(CORE) -o $(D2) $(RAYLIB)
+
 # ----------------------
 # clean
 # ----------------------
