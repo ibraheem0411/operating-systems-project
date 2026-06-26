@@ -14,75 +14,34 @@
 #include <string.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <semaphore.h>
 
-/* ===================================================== */
-
-typedef struct
-{
-    int traveler_id;
-    int len;
-} PathHeader;
-
-/* ======= SCHEDULER IPC DATA ======= */
-typedef enum { REQ_WAIT, REQ_LEAVE } ReqType;
-
+/* =====================================================
+ * MESSAGE STRUCTURE - Child sends position updates only
+ * ===================================================== */
 typedef struct {
+    pid_t pid;
     int traveler_id;
-    int node_id;
-    ReqType type;
-} SchedulerReq;
-
-/* ===================================================== */
-
-typedef enum
-{
-    MOVING,
-    WAITING_FOR_NODE,
-    INSIDE_NODE,
-    FINISHED
-} TravelerState;
-
-/* ===================================================== */
-
-typedef struct
-{
-    TravelerState state;
-    int currentNode;
-    int nextNode;
-    int remainingNodes; // Used for SJF Scheduling
-} TravelerInfo;
+    int current_node;
+    int next_node;      // -1 if destination or no path
+    bool finished;      // true when reached destination
+    bool no_path;       // true if no path exists
+} PositionMessage;
 
 /* ===================================================== */
 
 int main(int argc, char **argv)
 {
-    char schedAlgo[10] = "fcfs"; // Default algorithm
-    char *inputFile = NULL;
-
-    // Milestone 7 args check
-    if (argc == 4&& strcmp(argv[1], "-schd") == 0)
+    if (argc != 2)
     {
-        strcpy(schedAlgo, argv[2]);
-        inputFile = argv[3];
-    }
-    else if (argc == 2)
-    {
-        inputFile = argv[1];
-    }
-    else
-    {
-        printf("Usage for M7: %s <-schd> <fcfs|sjf> <input_file>\n", argv[0]);
-        printf("Usage for M2-M6: %s <input_file>\n", argv[0]);
+        printf("Usage: %s <input_file>\n", argv[0]);
         return 1;
     }
 
-    Graph *g = parseGraph(inputFile);
-    if (!g) return 1;
+    Graph *g = parseGraph(argv[1]);
+    if (!g)
+        return 1;
 
-    InitWindow(900, 700, "Milestone 7 - Scheduling Algorithms");
+    InitWindow(900, 700, "Milestone 5 - IPC Autonomous Children");
     SetTargetFPS(60);
 
     Layout layout;
@@ -91,71 +50,31 @@ int main(int argc, char **argv)
     /* =====================================================
      * STATE (PARENT ONLY)
      * ===================================================== */
-    int **path = calloc(g->travelers, sizeof(int *));
-    int *pathSize = calloc(g->travelers, sizeof(int));
-
-    int *currentNode = calloc(g->travelers, sizeof(int));
-    int *jumpCount = calloc(g->travelers, sizeof(int));
-    float *edgeTimer = calloc(g->travelers, sizeof(float));
-
     Vector2 *pos = calloc(g->travelers, sizeof(Vector2));
+    int *currentNode = calloc(g->travelers, sizeof(int));
+    bool *finished = calloc(g->travelers, sizeof(bool));
+    bool *noPath = calloc(g->travelers, sizeof(bool));
+
+    // Initialize positions at source nodes
+    for (int i = 0; i < g->travelers; i++) {
+        pos[i] = layout.pos[g->src[i]];
+        currentNode[i] = g->src[i];
+    }
 
     bool isPlaying = true;
-    Rectangle playBtn = {20, 60, 140, 40};
-
-    /* ======= SCHEDULER QUEUES ======= */
-    int *nodeOccupant = malloc(g->N * sizeof(int));
-    for(int i=0; i<g->N; i++) nodeOccupant[i] = -1;
-
-    bool *isWaiting = calloc(g->travelers, sizeof(bool));
-    int *waitingForNode = calloc(g->travelers, sizeof(int));
-    double *arrivalTime = calloc(g->travelers, sizeof(double));
+    Rectangle playBtn = {20, 50, 140, 40};
 
     /* =====================================================
-     * PIPES
+     * PIPE - For position updates from children
      * ===================================================== */
-    int pathPipe[2], logPipe[2], reqPipe[2];
-    pipe(pathPipe);
-    pipe(logPipe);
-    pipe(reqPipe);
-
-    fcntl(logPipe[0], F_SETFL, O_NONBLOCK);
-    fcntl(reqPipe[0], F_SETFL, O_NONBLOCK); // Parent reads requests without blocking
+    int msgPipe[2];
+    if (pipe(msgPipe) < 0) {
+        perror("pipe failed");
+        return 1;
+    }
+    fcntl(msgPipe[0], F_SETFL, O_NONBLOCK);
 
     pid_t *pid = malloc(g->travelers * sizeof(pid_t));
-
-    /* =====================================================
-     * SHARED MEMORY
-     * ===================================================== */
-    int shm_fd = shm_open("/traveler_state", O_CREAT | O_RDWR, 0666);
-    if (shm_fd == -1) exit(1);
-
-    size_t shmSize = g->travelers * sizeof(TravelerInfo);
-    ftruncate(shm_fd, shmSize);
-
-    TravelerInfo *shared = mmap(NULL, shmSize, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (shared == MAP_FAILED) exit(1);
-
-    for (int i = 0; i < g->travelers; i++)
-    {
-        shared[i].state = MOVING;
-        shared[i].currentNode = -1;
-        shared[i].nextNode = -1;
-        shared[i].remainingNodes = 0;
-    }
-
-    /* =====================================================
-     * INDIVIDUAL SEMAPHORES (For precise scheduling)
-     * ===================================================== */
-    sem_t **childSem = malloc(g->travelers * sizeof(sem_t *));
-    for (int i = 0; i < g->travelers; i++)
-    {
-        char name[64];
-        sprintf(name, "/child_sem_%d", i);
-        sem_unlink(name);
-        // Init to 0 so child waits until parent schedules it
-        childSem[i] = sem_open(name, O_CREAT, 0666, 0); 
-    }
 
     /* =====================================================
      * FORK CHILDREN
@@ -166,274 +85,165 @@ int main(int argc, char **argv)
 
         if (pid[i] == 0)
         {
-            close(pathPipe[0]);
-            close(logPipe[0]);
-            close(reqPipe[0]);
+            // ---------- CHILD PROCESS ----------
+            close(msgPipe[0]);  // close read end
 
             int len = 0;
             int *myPath = dijkstra(g, &len, i);
-            if (!myPath) exit(0);
 
-            // Send path to parent
-            PathHeader h = {i, len};
-            write(pathPipe[1], &h, sizeof(h));
-            write(pathPipe[1], myPath, len * sizeof(int));
-
-            // Traverse Path
-            for (int j = 0; j < len; j++)
+            // Check if no path exists (Disconnected Graph)
+            if (!myPath || len == 0)
             {
-                int curr = myPath[j];
-                shared[i].remainingNodes = len - j; // Important for SJF!
+                // Send NO PATH message
+                PositionMessage msg = {
+                    .pid = getpid(),
+                    .traveler_id = i,
+                    .current_node = g->src[i],
+                    .next_node = -1,
+                    .finished = true,
+                    .no_path = true
+                };
+                write(msgPipe[1], &msg, sizeof(msg));
+                
+                close(msgPipe[1]);
+                _exit(0);
+            }
 
-                // 1. Request Entry
-                shared[i].state = WAITING_FOR_NODE;
-                shared[i].nextNode = curr;
-                SchedulerReq req = {i, curr, REQ_WAIT};
-                write(reqPipe[1], &req, sizeof(req));
+            // Travel along the path autonomously
+            for (int step = 0; step < len; step++) {
+                int current = myPath[step];
+                int next = (step < len - 1) ? myPath[step + 1] : -1;
 
-                // 2. Wait for Parent Scheduler to pick me
-                sem_wait(childSem[i]);
+                // Send position update
+                PositionMessage msg = {
+                    .pid = getpid(),
+                    .traveler_id = i,
+                    .current_node = current,
+                    .next_node = next,
+                    .finished = (step == len - 1),
+                    .no_path = false
+                };
+                write(msgPipe[1], &msg, sizeof(msg));
 
-                // 3. I am inside!
-                shared[i].state = INSIDE_NODE;
-                shared[i].currentNode = curr;
-
-                if (j < len - 1)
-                    dprintf(logPipe[1], "[PID=%d] arrived at node %d | next node: %d\n", getpid(), curr, myPath[j+1]);
-                else
-                    dprintf(logPipe[1], "[PID=%d] arrived at node %d | DESTINATION\n", getpid(), curr);
-
-                sleep(1); // Stay inside node for 1 second
-
-                // 4. Leave Node
-                SchedulerReq leave = {i, curr, REQ_LEAVE};
-                write(reqPipe[1], &leave, sizeof(leave));
-
-                // 5. Move on Edge
-                if (j < len - 1)
-                {
-                    shared[i].state = MOVING;
-                    int weight = g->matrix[curr][myPath[j+1]];
-                    usleep(weight * 300000); // 300ms per edge weight unit
+                // Wait before moving to next node based on edge weight
+                if (step < len - 1) {
+                    int from = myPath[step];
+                    int to = myPath[step + 1];
+                    int weight = g->matrix[from][to];
+                    if (weight <= 0) weight = 1;
+                    usleep(weight * 300000);  // 0.3 sec per weight unit
                 }
             }
 
-            shared[i].state = FINISHED;
-            dprintf(logPipe[1], "[PID=%d] finished\n", getpid());
-
             free(myPath);
-            close(pathPipe[1]);
-            close(logPipe[1]);
-            close(reqPipe[1]);
+            close(msgPipe[1]);
             _exit(0);
         }
     }
 
-    close(pathPipe[1]);
-    close(logPipe[1]);
-    close(reqPipe[1]);
+    close(msgPipe[1]);  // parent closes write end
 
     /* =====================================================
-     * RECEIVE PATHS
+     * MAIN LOOP - Receive messages and update GUI
      * ===================================================== */
-    int received = 0;
-    while (received < g->travelers)
-    {
-        PathHeader h;
-        if (read(pathPipe[0], &h, sizeof(h)) <= 0)
-        {
-            usleep(1000);
-            continue;
-        }
+    int finishedCount = 0;
+    int noPathCount = 0;
 
-        pathSize[h.traveler_id] = h.len;
-        path[h.traveler_id] = malloc(h.len * sizeof(int));
-        read(pathPipe[0], path[h.traveler_id], h.len * sizeof(int));
-
-        pos[h.traveler_id] = layout.pos[path[h.traveler_id][0]];
-        currentNode[h.traveler_id] = 0;
-        jumpCount[h.traveler_id] = 0;
-        edgeTimer[h.traveler_id] = 0;
-
-        received++;
-    }
-
-    /* =====================================================
-     * MAIN LOOP (SCHEDULER & ANIMATION)
-     * ===================================================== */
     while (!WindowShouldClose())
     {
-        float dt = GetFrameTime();
-
-        /* ---------------- INPUT (Play/Pause) ---------------- */
-        bool clicked = CheckCollisionPointRec(GetMousePosition(), playBtn) && IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
-        if (clicked || IsKeyPressed(KEY_SPACE))
-        {
-            isPlaying = !isPlaying;
-            // Send signal to pause/resume children POSIX processes 
-            for(int i=0; i<g->travelers; i++) {
-                if (isPlaying) kill(pid[i], SIGCONT);
-                else kill(pid[i], SIGSTOP);
-            }
-        }
-
-        /* ---------------- LOGS ---------------- */
-        char buffer[512];
+        /* ---------------- READ MESSAGES ---------------- */
+        PositionMessage msg;
         int n;
-        while ((n = read(logPipe[0], buffer, sizeof(buffer) - 1)) > 0)
+
+        while ((n = read(msgPipe[0], &msg, sizeof(msg))) > 0)
         {
-            buffer[n] = 0;
-            printf("%s", buffer);
-        }
+            int idx = msg.traveler_id;
 
-        /* ---------------- SCHEDULER LOGIC ---------------- */
-        if (isPlaying)
-        {
-            SchedulerReq req;
-            while (read(reqPipe[0], &req, sizeof(req)) > 0)
-            {
-                int node = req.node_id;
-                int tid = req.traveler_id;
-
-                if (req.type == REQ_WAIT)
-                {
-                    if (nodeOccupant[node] == -1) // Node is free
-                    {
-                        nodeOccupant[node] = tid;
-                        sem_post(childSem[tid]); // Wake up child immediately
-                    }
-                    else // Node is occupied, put in queue
-                    {
-                        isWaiting[tid] = true;
-                        waitingForNode[tid] = node;
-                        arrivalTime[tid] = GetTime(); // For FCFS
-                    }
-                }
-                else if (req.type == REQ_LEAVE)
-                {
-                    nodeOccupant[node] = -1;
-
-                    // Scheduling: Pick next traveler from queue [cite: 279]
-                    int best_id = -1;
-
-                    if (strcmp(schedAlgo, "sjf") == 0)
-                    {
-                        int min_job = 999999;
-                        double min_time = 1e9;
-                        for (int i = 0; i < g->travelers; i++)
-                        {
-                            if (isWaiting[i] && waitingForNode[i] == node)
-                            {
-                                int rem = shared[i].remainingNodes; // Job size = remaining nodes
-                                // Pick shortest job, fallback to FCFS if equal
-                                if (rem < min_job || (rem == min_job && arrivalTime[i] < min_time))
-                                {
-                                    min_job = rem;
-                                    min_time = arrivalTime[i];
-                                    best_id = i;
-                                }
-                            }
-                        }
-                    }
-                    else // fcfs default
-                    {
-                        double min_time = 1e9;
-                        for (int i = 0; i < g->travelers; i++)
-                        {
-                            if (isWaiting[i] && waitingForNode[i] == node)
-                            {
-                                if (arrivalTime[i] < min_time)
-                                {
-                                    min_time = arrivalTime[i];
-                                    best_id = i;
-                                }
-                            }
-                        }
-                    }
-
-                    // Wake up the scheduled child
-                    if (best_id != -1)
-                    {
-                        nodeOccupant[node] = best_id;
-                        isWaiting[best_id] = false;
-                        sem_post(childSem[best_id]);
-                    }
-                }
-            }
-        }
-
-        /* ---------------- ANIMATION ---------------- */
-        if (isPlaying)
-        {
-            for (int i = 0; i < g->travelers; i++)
-            {
-                if (pathSize[i] < 2 || shared[i].state == FINISHED) continue;
-
-                if (shared[i].state == WAITING_FOR_NODE || shared[i].state == INSIDE_NODE)
-                {
-                    // Snap exactly to node position to avoid visual desync
-                    int node = shared[i].nextNode;
-                    if(node != -1) pos[i] = layout.pos[node];
-                    jumpCount[i] = 0; 
-                    edgeTimer[i] = 0;
-                }
-                else if (shared[i].state == MOVING)
-                {
-                    int from = shared[i].currentNode;
-                    int to = shared[i].nextNode;
+            // Handle Special NO PATH Message
+            if (msg.no_path) {
+                if (!noPath[idx]) { // Prevent duplicate logs
+                    noPath[idx] = true;
+                    noPathCount++;
+                    finished[idx] = true;
+                    finishedCount++;
                     
-                    if (from != -1 && to != -1) {
-                        int weight = g->matrix[from][to];
-                        if (weight <= 0) weight = 1;
-
-                        edgeTimer[i] += dt;
-                        if (edgeTimer[i] >= 0.3f)
-                        {
-                            edgeTimer[i] -= 0.3f;
-                            jumpCount[i]++;
-                        }
-
-                        float t = (float)jumpCount[i] / weight;
-                        if(t > 1.0f) t = 1.0f;
-
-                        Vector2 a = layout.pos[from];
-                        Vector2 b = layout.pos[to];
-                        pos[i].x = a.x + t * (b.x - a.x);
-                        pos[i].y = a.y + t * (b.y - a.y);
-                    }
+                    // Print special error message to terminal as required
+                    printf("[PID=%d] ERROR: No route found from node %d to destination %d! (Disconnected Graph)\n", 
+                           msg.pid, g->src[idx], g->dst[idx]);
+                    printf("[PID=%d] finished\n", msg.pid);
+                    
+                    pos[idx] = layout.pos[g->src[idx]];
                 }
+                continue;
+            }
+
+            // Update position for normal movement
+            pos[idx] = layout.pos[msg.current_node];
+            currentNode[idx] = msg.current_node;
+
+            // Print normal log messages from parent process
+            if (msg.next_node != -1) {
+                printf("[PID=%d] arrived at node %d | next node: %d\n",
+                       msg.pid, msg.current_node, msg.next_node);
+            } else {
+                printf("[PID=%d] arrived at node %d | DESTINATION\n",
+                       msg.pid, msg.current_node);
+            }
+
+            // Handle normal finish
+            if (msg.finished && !finished[idx]) {
+                finished[idx] = true;
+                finishedCount++;
+                printf("[PID=%d] finished\n", msg.pid);
             }
         }
+
+        /* ---------------- INPUT ---------------- */
+        bool clicked =
+            CheckCollisionPointRec(GetMousePosition(), playBtn) &&
+            IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+
+        if (clicked || IsKeyPressed(KEY_SPACE))
+            isPlaying = !isPlaying;
 
         /* ---------------- RENDER ---------------- */
         BeginDrawing();
-        ClearBackground(BLACK);
+        ClearBackground(RAYWHITE);
 
         drawGraph(g, &layout);
 
-        // UI 
-        DrawText(TextFormat("Scheduler: %s", (strcmp(schedAlgo, "sjf") == 0) ? "SJF (Shortest Job First)" : "FCFS (First Come First Serve)"), 20, 20, 20, RAYWHITE);
-
         DrawRectangleRec(playBtn, LIGHTGRAY);
         DrawRectangleLines(playBtn.x, playBtn.y, playBtn.width, playBtn.height, DARKGRAY);
-        DrawText(isPlaying ? "PAUSE" : "PLAY", playBtn.x + 35, playBtn.y + 10, 20, BLACK);
+
+        DrawText(isPlaying ? "STOP" : "PLAY",
+                 playBtn.x + 35, playBtn.y + 10, 20, BLACK);
+
+        Color colors[] = {RED, BLUE, GREEN, PURPLE, ORANGE, YELLOW};
 
         for (int i = 0; i < g->travelers; i++)
         {
-            Color c;
-            switch (shared[i].state)
-            {
-                case WAITING_FOR_NODE: c = YELLOW; break;
-                case INSIDE_NODE: c = GREEN; break;
-                case MOVING: c = BLUE; break;
-                case FINISHED: c = GRAY; break;
-                default: c = RED;
+            if (noPath[i]) {
+                // Draw in gray with a red X for travelers with no path
+                DrawCircle(pos[i].x, pos[i].y, 12, GRAY);
+                DrawCircleLines(pos[i].x, pos[i].y, 12, DARKGRAY);
+                DrawLine(pos[i].x - 6, pos[i].y - 6, pos[i].x + 6, pos[i].y + 6, RED);
+                DrawLine(pos[i].x + 6, pos[i].y - 6, pos[i].x - 6, pos[i].y + 6, RED);
+            } else {
+                DrawCircle(pos[i].x, pos[i].y, 10, colors[i % 6]);
+                DrawCircleLines(pos[i].x, pos[i].y, 10, colors[i % 6]);
             }
-            DrawCircle(pos[i].x, pos[i].y, 10, c);
-            DrawCircleLines(pos[i].x, pos[i].y, 10, BLACK);
         }
 
         EndDrawing();
+
+        // Exit loop when all travelers are done
+        if (finishedCount == g->travelers) {
+            printf("All travelers finished.\n");
+            if (noPathCount > 0) {
+                printf("%d traveler(s) found no path.\n", noPathCount);
+            }
+            break;
+        }
     }
 
     /* =====================================================
@@ -443,24 +253,15 @@ int main(int argc, char **argv)
     {
         kill(pid[i], SIGTERM);
         waitpid(pid[i], NULL, 0);
-        free(path[i]);
-        
-        char name[64];
-        sprintf(name, "/child_sem_%d", i);
-        sem_close(childSem[i]);
-        sem_unlink(name);
     }
-
-    munmap(shared, shmSize);
-    close(shm_fd);
-    shm_unlink("/traveler_state");
 
     CloseWindow();
 
-    free(path); free(pathSize); free(currentNode);
-    free(jumpCount); free(edgeTimer); free(pos);
-    free(pid); free(nodeOccupant); free(isWaiting);
-    free(waitingForNode); free(arrivalTime); free(childSem);
+    free(pos);
+    free(currentNode);
+    free(finished);
+    free(noPath);
+    free(pid);
     freeGraph(g);
 
     return 0;
