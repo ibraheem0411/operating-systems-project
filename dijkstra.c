@@ -13,13 +13,13 @@ int main(int argc, char **argv)
 
     if (g->src == g->dst)
     {
-        printf("%d\n0\n", *(g->src));
+        printf("%d\n0\n", g->src);
         freeGraph(g);
         return 0;
     }
 
     int size;
-    int *path = dijkstra(g, &size, 0);
+    int *path = dijkstra(g, &size);
 
     if (path == NULL)
     {
