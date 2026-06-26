@@ -103,8 +103,8 @@ make milestone6
 make milestone7
 
 ## Run
-./sim-schd fcfs <file_name>
-./sim-schd sjf <file_name>
+./sim -schd fcfs <file_name>
+./sim -schd sjf <file_name>
 
 ## Comparison: FCFS vs SJF
 In FCFS, travelers enter a node strictly based on their arrival time. While fair, this can cause significant delays if a traveler with a very long remaining path blocks a critical node. 
