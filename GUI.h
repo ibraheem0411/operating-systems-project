@@ -1,26 +1,17 @@
-#ifndef GRAPH_H
-#define GRAPH_H
+#ifndef GUI_H
+#define GUI_H
 
-#include <stdio.h>
-#include <stdlib.h>
+#include "Graph.h"
+#include "raylib.h"
 
-#define INF 10000000
+#define MAX_NODES 15
 
 typedef struct
 {
-    int N;
-    int M;
-    int **matrix;
-    int travelers;
-    int* src;
-    int* dst;
-} Graph;
+    Vector2 pos[MAX_NODES];
+} Layout;
 
-
-// functions
-Graph *parseGraph(const char *path);
-void freeGraph(Graph *g);
-void printGraph(Graph *g);
-int *dijkstra(Graph *g, int *pathSize, int travelerIndex);
+void computeLayout(Layout *layout, int N, Vector2 center);
+void drawGraph(Graph *g, Layout *layout);
 
 #endif
