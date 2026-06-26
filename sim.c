@@ -17,7 +17,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <semaphore.h>
-
+#include <limits.h>
 /* ===================================================== */
 
 typedef struct
@@ -53,6 +53,7 @@ typedef struct
     int currentNode;
     int nextNode;
     int remainingNodes; // Used for SJF Scheduling
+    pid_t pid;
 } TravelerInfo;
 
 /* ===================================================== */
@@ -169,7 +170,7 @@ int main(int argc, char **argv)
             close(pathPipe[0]);
             close(logPipe[0]);
             close(reqPipe[0]);
-
+            shared[i].pid = getpid();
             int len = 0;
             int *myPath = dijkstra(g, &len, i);
             if (!myPath) exit(0);
@@ -219,7 +220,7 @@ int main(int argc, char **argv)
             }
 
             shared[i].state = FINISHED;
-            dprintf(logPipe[1], "[PID=%d] finished\n", getpid());
+            dprintf(logPipe[1], "DONE:%d\n", getpid());
 
             free(myPath);
             close(pathPipe[1]);
@@ -283,8 +284,17 @@ int main(int argc, char **argv)
         while ((n = read(logPipe[0], buffer, sizeof(buffer) - 1)) > 0)
         {
             buffer[n] = 0;
-            printf("%s", buffer);
-        }
+            if (strncmp(buffer, "DONE:", 5) == 0)
+            {
+                int done_pid;
+                sscanf(buffer, "DONE:%d", &done_pid);
+                printf("[PID=%d] has completed its journey!\n", done_pid);
+                }
+                else
+                {
+                    printf("%s", buffer);
+                }
+            }
 
         /* ---------------- SCHEDULER LOGIC ---------------- */
         if (isPlaying)
@@ -335,6 +345,21 @@ int main(int argc, char **argv)
                             }
                         }
                     }
+                    else if (strcmp(schedAlgo, "priority") == 0)
+                        {
+                            pid_t min_pid = INT_MAX;
+                            for (int i = 0; i < g->travelers; i++)
+                            {
+                                if (isWaiting[i] && waitingForNode[i] == node)
+                                {
+                                    if (shared[i].pid < min_pid)
+                                    {
+                                        min_pid = shared[i].pid;
+                                        best_id = i;
+                                    }
+                                }
+                            }
+                        }
                     else // fcfs default
                     {
                         double min_time = 1e9;
@@ -412,8 +437,10 @@ int main(int argc, char **argv)
         drawGraph(g, &layout);
 
         // UI 
-        DrawText(TextFormat("Scheduler: %s", (strcmp(schedAlgo, "sjf") == 0) ? "SJF (Shortest Job First)" : "FCFS (First Come First Serve)"), 20, 20, 20, RAYWHITE);
-
+        DrawText(TextFormat("Scheduler: %s", 
+            (strcmp(schedAlgo, "sjf") == 0) ? "SJF (Shortest Job First)" : 
+            (strcmp(schedAlgo, "priority") == 0) ? "Priority (Lowest PID First)" : 
+            "FCFS (First Come First Serve)"), 20, 20, 20, RAYWHITE);
         DrawRectangleRec(playBtn, LIGHTGRAY);
         DrawRectangleLines(playBtn.x, playBtn.y, playBtn.width, playBtn.height, DARKGRAY);
         DrawText(isPlaying ? "PAUSE" : "PLAY", playBtn.x + 35, playBtn.y + 10, 20, BLACK);
