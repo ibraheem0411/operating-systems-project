@@ -220,7 +220,7 @@ int main(int argc, char **argv)
             }
 
             shared[i].state = FINISHED;
-            dprintf(logPipe[1], "DONE:%d\n", getpid());
+            dprintf(logPipe[1], "[PID=%d] finished\n", getpid());
 
             free(myPath);
             close(pathPipe[1]);
@@ -284,17 +284,8 @@ int main(int argc, char **argv)
         while ((n = read(logPipe[0], buffer, sizeof(buffer) - 1)) > 0)
         {
             buffer[n] = 0;
-            if (strncmp(buffer, "DONE:", 5) == 0)
-            {
-                int done_pid;
-                sscanf(buffer, "DONE:%d", &done_pid);
-                printf("[PID=%d] has completed its journey!\n", done_pid);
-                }
-                else
-                {
-                    printf("%s", buffer);
-                }
-            }
+            printf("%s", buffer);
+        }
 
         /* ---------------- SCHEDULER LOGIC ---------------- */
         if (isPlaying)
