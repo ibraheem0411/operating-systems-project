@@ -161,7 +161,7 @@ int main(int argc, char **argv)
         if (h.len < 0)
         {
             dprintf(logPipe[1],
-        "[PID=%d] NO PATH to destination\n",
+        "[PID=%d] NO PATH to Destination\n",
         getpid());
 
             pathSize[h.traveler_id] = 0;
