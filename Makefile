@@ -35,3 +35,16 @@ milestone5:
 # ----------------------
 clean:
 	rm -f $(D1) $(D2)
+
+
+
+raylib:
+	sudo apt update
+	sudo apt install -y build-essential cmake git \
+		libx11-dev libxrandr-dev libxi-dev \
+		libgl1-mesa-dev libxcursor-dev libxinerama-dev
+	rm -rf /tmp/raylib
+	git clone https://github.com/raysan5/raylib.git /tmp/raylib
+	mkdir -p /tmp/raylib/build
+	cd /tmp/raylib/build && cmake .. && make && sudo make install
+	sudo ldconfig

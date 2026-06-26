@@ -87,8 +87,20 @@ int main(int argc, char **argv)
             int len = 0;
             int *myPath = dijkstra(g, &len, i);
 
-            if (!myPath)
-                exit(0);
+            if (!myPath){
+                PathHeader h = {i, -1};  // signal "no path"
+                write(pathPipe[1], &h, sizeof(h));
+
+                dprintf(logPipe[1],
+                        "[PID=%d] NO PATH to destination\n",
+                        getpid());
+
+                close(pathPipe[1]);
+                close(logPipe[1]);
+                _exit(0);
+            }
+
+
 
             /* send path */
             PathHeader h = {i, len};
@@ -146,6 +158,19 @@ int main(int argc, char **argv)
             continue;
         }
 
+        if (h.len < 0)
+        {
+            dprintf(logPipe[1],
+        "[PID=%d] NO PATH to destination\n",
+        getpid());
+
+            pathSize[h.traveler_id] = 0;
+            path[h.traveler_id] = NULL;
+
+            received++;
+            continue;
+        }
+
         pathSize[h.traveler_id] = h.len;
         path[h.traveler_id] = malloc(h.len * sizeof(int));
 
@@ -153,6 +178,12 @@ int main(int argc, char **argv)
 
         pos[h.traveler_id] = layout.pos[path[h.traveler_id][0]];
 
+        currentNode[h.traveler_id] = 0;
+        jumpCount[h.traveler_id] = 0;
+        edgeTimer[h.traveler_id] = 0;
+        waiting[h.traveler_id] = true;
+
+        received++;
         currentNode[h.traveler_id] = 0;
         jumpCount[h.traveler_id] = 0;
         edgeTimer[h.traveler_id] = 0;
