@@ -59,7 +59,8 @@ typedef struct
 
 int main(int argc, char **argv)
 {
-    char schedAlgo[10] = "fcfs"; // Default algorithm
+    // Increased buffer size to safely fit "priority"
+    char schedAlgo[16] = "fcfs"; // Default algorithm
     char *inputFile = NULL;
 
     // Milestone 7 args check
@@ -74,7 +75,7 @@ int main(int argc, char **argv)
     }
     else
     {
-        printf("Usage for M7: %s <-schd> <fcfs|sjf> <input_file>\n", argv[0]);
+        printf("Usage for M7: %s <-schd> <fcfs|sjf|priority> <input_file>\n", argv[0]);
         printf("Usage for M2-M6: %s <input_file>\n", argv[0]);
         return 1;
     }
@@ -313,7 +314,7 @@ int main(int argc, char **argv)
                 {
                     nodeOccupant[node] = -1;
 
-                    // Scheduling: Pick next traveler from queue [cite: 279]
+                    // Scheduling: Pick next traveler from queue
                     int best_id = -1;
 
                     if (strcmp(schedAlgo, "sjf") == 0)
@@ -330,6 +331,22 @@ int main(int argc, char **argv)
                                 {
                                     min_job = rem;
                                     min_time = arrivalTime[i];
+                                    best_id = i;
+                                }
+                            }
+                        }
+                    }
+                    else if (strcmp(schedAlgo, "priority") == 0)
+                    {
+                        int min_pid = 2147483647; // Max initial value
+                        for (int i = 0; i < g->travelers; i++)
+                        {
+                            if (isWaiting[i] && waitingForNode[i] == node)
+                            {
+                                // Select child with the lowest PID
+                                if (pid[i] < min_pid)
+                                {
+                                    min_pid = pid[i];
                                     best_id = i;
                                 }
                             }
@@ -412,7 +429,7 @@ int main(int argc, char **argv)
         drawGraph(g, &layout);
 
         // UI 
-        DrawText(TextFormat("Scheduler: %s", (strcmp(schedAlgo, "sjf") == 0) ? "SJF (Shortest Job First)" : "FCFS (First Come First Serve)"), 20, 20, 20, RAYWHITE);
+        DrawText(TextFormat("Scheduler: %s", (strcmp(schedAlgo, "priority") == 0) ? "Priority (Lowest PID)" : ((strcmp(schedAlgo, "sjf") == 0) ? "SJF (Shortest Job First)" : "FCFS (First Come First Serve)")), 20, 20, 20, RAYWHITE);
 
         DrawRectangleRec(playBtn, LIGHTGRAY);
         DrawRectangleLines(playBtn.x, playBtn.y, playBtn.width, playBtn.height, DARKGRAY);
